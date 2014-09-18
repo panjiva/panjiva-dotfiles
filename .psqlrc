@@ -1,0 +1,165 @@
+---- Pweaver's magic ~/.psqlrc file
+-- LICENSE
+--------------------------------------------------------------------------------
+-- The MIT License (MIT)
+--
+-- Copyright (c) 2014 Panjiva
+--
+-- Permission is hereby granted, free of charge, to any person obtaining a copy
+-- of this software and associated documentation files (the "Software"), to deal
+-- in the Software without restriction, including without limitation the rights
+-- to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+-- copies of the Software, and to permit persons to whom the Software is
+-- furnished to do so, subject to the following conditions:
+--
+-- The above copyright notice and this permission notice shall be included in
+-- all copies or substantial portions of the Software.
+--
+-- THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+-- IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+-- FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+-- AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+-- LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+-- OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+-- THE SOFTWARE.
+---------------------------------------------------------------------------------
+----- DOT FILE SETUP
+
+-- To get the pager to behave sanely you should have the following set in your
+-- .bashrc file
+
+---- Use the LESS pager
+-- export PAGER=less
+
+---- Set the less default options.
+-- export LESS="-S"
+-- I usually use export LESS="-SFRXiw".
+-- The S stops line wrapping so you can see tables in psql
+
+---- You should also run mkdir ~/.psql_history so the HTSFILE works correctly
+
+-- Type :help in the psql console to print the help file here
+
+---------------------------------------------------------------------------------
+---- DEFAULTS
+
+-- Keep psql from spewing while we setup the session
+\set QUIET 1
+
+-- Set timing on and see how long query took
+\timing
+
+-- Customize the psql prompt
+-- I use <username>@<hostname>:<port> <database> >
+\set PROMPT1 '%[%033[1;33m%]%n@%M:%>%[%033[1;32m%] %/% %[%033[1;34m%]>%[%033[0m%]% \n'
+\set PROMPT2 :PROMPT1
+\set PROMPT3 '>> '
+
+
+-- If a query doesn't have a limit count, auto add one.
+-- Useful for querying large tables without hosing your connection
+\set FETCH_COUNT 1000
+
+-- If you want you can set pager to off.
+--\pset pager off
+
+
+-- See 'NULL' for null value
+\pset null 'NULL'
+
+-- Get rid of duplicate sequences in the history
+\set HISTCONTROL ignoredups
+-- Set the command history file names for each host and database
+\set HISTFILE ~/.psql_history/- :HOST - :DBNAME
+-- Set the number of commands to store in each command history
+\set HISTSIZE 2000
+
+-- Encoding - UTF-8
+\encoding unicode
+
+-- Enable expanded output, off by default.
+-- Useful if you need a record rather than table overview.
+-- \x on
+
+---------------------------------------------------------------------------------
+---- TABLE SIZE UTILITIES
+
+-- Gets table sizes in bytes, mostly a helper utility
+-- SELECT * from :rtsize as foo;
+\set rtsize '(select table_schema, table_name, pg_relation_size( quote_ident( table_schema ) || \'.\' || quote_ident( table_name ) ) as size, pg_total_relation_size( quote_ident( table_schema ) || \'.\' || quote_ident( table_name ) ) as total_size  from information_schema.tables where table_type = \'BASE TABLE\' and table_schema not in (\'information_schema\', \'pg_catalog\') order by pg_relation_size( quote_ident( table_schema ) || \'.\' || quote_ident( table_name ) ) desc, table_schema, table_name)'
+
+-- Gets table sizes ordered by size, pretty print the sizes
+-- SELECT * from :tsize_pretty as foo;
+\set tsize_pretty '(select table_schema, table_name, pg_size_pretty(size) as size, pg_size_pretty(total_size) as total_size from (:rtsize) x order by x.size desc, x.total_size desc, table_schema, table_name)'
+
+-- Gets table sizes ordered by size, pretty print the sizes
+-- SELECT * from :tsize as foo;
+\set tsize '(select table_schema, table_name, size as size, total_size as total_size from (:rtsize) x order by x.size desc, x.total_size desc, table_schema, table_name)'
+
+-- Helper to search for table sizes you are looking for, uses a regexp on the name;
+-- :size 'foo';
+\set size 'SELECT * from :tsize_pretty as foo where foo.table_name ~ '
+
+-- Helper to sum table sizes by matching a regexp
+-- :total_size 'foo|bar|baz';
+\set total_size 'SELECT pg_size_pretty(sum(size)::bigint) as size, pg_size_pretty(sum(total_size)::bigint) as total_size from :tsize as foo where foo.table_name ~ '
+
+---------------------------------------------------------------------------------
+---- EXPLAIN UTILITIES
+
+-- This is a useful function to explain an activly running query.
+-- It works be creating a function in the pg_temp namespace on initialization.
+-- You can explain a plan by pid.
+-- This will not work if the query is too long and gets truncated in pg_stat_activity
+-- You can modify the track_activity_query_size (integer) parameter in postgresql.conf to increase this limit.
+
+
+-- explains actively running queries 'SELECT pg_temp.explain(pid);'
+CREATE FUNCTION pg_temp.explain(int) returns setof text AS
+$$
+declare
+  r text;
+begin
+  return next (SELECT query FROM pg_stat_activity WHERE pid = $1);
+  for r in EXECUTE 'EXPLAIN ' || (SELECT query FROM pg_stat_activity WHERE pid = $1) loop
+    return next r;
+  end loop;
+  return;
+end;
+$$ language plpgsql;
+
+-- :explain(pid);
+\set explain 'SELECT pg_temp.explain'
+
+---------------------------------------------------------------------------------
+---- OTHER ALIASES
+
+-- Get currently running queries
+-- :current;
+\set current 'SELECT * FROM pg_stat_activity WHERE state = \'active\''
+
+-- shortcut for killing and canceling queries
+-- SELECT :kill(pid);
+\set kill 'pg_terminate_backend'
+
+-- SELECT :cancel(pid);
+\set cancel 'pg_cancel_backend'
+
+-- query current locks
+-- :locks
+\set locks 'SELECT bl.pid AS blocked_pid, a.usename AS blocked_user, ka.query AS blocking_statement, now() - ka.query_start AS blocking_duration, kl.pid AS blocking_pid, ka.usename AS blocking_user, a.query AS blocked_statement, now() - a.query_start  AS blocked_duration FROM  pg_catalog.pg_locks bl JOIN pg_catalog.pg_stat_activity a  ON a.pid = bl.pid JOIN pg_catalog.pg_locks         kl ON kl.transactionid = bl.transactionid AND kl.pid != bl.pid JOIN pg_catalog.pg_stat_activity ka ON ka.pid = kl.pid WHERE NOT bl.granted;'
+
+-- query enum values
+-- :enum_values 'enum'
+\set enum_values 'SELECT e.enumlabel FROM pg_enum e JOIN pg_type t ON e.enumtypid = t.oid WHERE t.typname = '
+
+
+---------------------------------------------------------------------------------
+---- HELP
+
+-- Help to remember useful functions
+-- :help
+\set help 'SELECT * FROM (VALUES (\'\\x\', \'expanded output\'), (\'\\pset pager off\', \'pager off\'), (\':size \'\'foo|bar|baz\'\';\', \'table sizes matching foo|bar|baz\'), (\':total_size \'\'foo|bar|baz\'\';\', \'Total table sizes matching foo|bar|baz\'), (\':explain(pid);\', \'EXPLAIN a running query\'), (\':current\', \'SELECT active queries from pg_stat_activity\'), (\'SELECT :kill(pid);\', \'SELECT pg_terminate_backend(pid)\'), (\'SELECT :cancel(pid);\', \'SELECT pg_cancel_backend(pid);\'), (\':locks\', \'query locks\'),  (\':enum_values \'\'enum\'\';\', \'get enum values SELECT unnest(enum_range(NULL::enum)) also works\')) AS help(command, help);'
+
+-- Reset the verbosity
+\set QUIET 0
